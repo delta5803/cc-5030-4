@@ -23,3 +23,15 @@ __pycache__/
 *.log
 .env
 .env.*
+
+# generated recording artifacts
+recordings/
+
+# Keep the delivered playable demo and its process record reproducible.
+!/recordings/
+/recordings/*
+!/recordings/543f4e7adbd0/
+/recordings/543f4e7adbd0/*
+!/recordings/543f4e7adbd0/*.mp4
+!/recordings/543f4e7adbd0/*.wav
+!/recordings/543f4e7adbd0/record.json

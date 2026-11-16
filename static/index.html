@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>多端录制制作面板</title>
+<style>
+  :root { --ok:#2e7d32; --warn:#ef6c00; --err:#c62828; --info:#1565c0; --muted:#777; }
+  * { box-sizing: border-box; }
+  body { font-family: "SF Mono", Consolas, "Courier New", monospace; margin:0;
+         background:#14171c; color:#dde3ea; font-size:14px; }
+  header { padding:12px 20px; background:#1c2129; border-bottom:1px solid #2a313b;
+           display:flex; align-items:baseline; gap:14px; }
+  header h1 { font-size:17px; margin:0; }
+  header span { color:var(--muted); font-size:12px; }
+  main { display:grid; grid-template-columns: 340px 1fr; gap:14px; padding:14px 20px; }
+  .card { background:#1c2129; border:1px solid #2a313b; border-radius:8px; padding:12px 14px; }
+  .card h2 { font-size:13px; margin:0 0 10px; color:#9fb0c3; text-transform:uppercase;
+             letter-spacing:.06em; }
+  .node-row { display:flex; align-items:center; gap:8px; padding:7px 6px;
+              border-bottom:1px solid #262d38; }
+  .node-row:last-child { border-bottom:none; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; background:#2a313b; }
+  .b-ready { background:#1e3d24; color:#7bd88a; } .b-recording { background:#3d2a1e; color:#ffb26b; }
+  .b-failed { background:#3d1e1e; color:#ff8a80; } .b-done { background:#1e323d; color:#7fc4ff; }
+  .kind { color:var(--muted); font-size:11px; }
+  select, input[type=number] { background:#12161b; color:#dde3ea; border:1px solid #2a313b;
+             border-radius:5px; padding:4px 6px; font:inherit; font-size:12px; }
+  button { background:#1565c0; color:#fff; border:none; border-radius:6px; padding:8px 18px;
+           font:inherit; cursor:pointer; }
+  button:disabled { background:#2a313b; color:#667; cursor:not-allowed; }
+  .ctl { display:flex; align-items:center; gap:8px; margin:8px 0; font-size:12px; }
+  .ctl label { color:#9fb0c3; min-width:88px; }
+  #events { max-height:260px; overflow:auto; font-size:12px; line-height:1.55; }
+  #events .e { white-space:nowrap; }
+  .ev-start_command_sent { color:#9aa7b5; } .ev-start_ack { color:#ffb26b; }
+  .ev-first_sample { color:#7bd88a; font-weight:bold; } .ev-node_error, .ev-prepare_timeout,
+  .ev-first_sample_timeout, .ev-policy_cancel { color:#ff8a80; }
+  .ev-ready { color:#7fc4ff; } .ev-done { color:#b39ddb; }
+  #timeline { width:100%; }
+  .tl-row { display:flex; align-items:center; height:26px; }
+  .tl-label { width:64px; font-size:12px; color:#9fb0c3; }
+  .tl-track { position:relative; flex:1; height:100%; border-bottom:1px dashed #262d38; }
+  .mk { position:absolute; top:50%; width:9px; height:9px; border-radius:50%;
+        transform:translate(-50%,-50%); }
+  .mk-bar { position:absolute; top:50%; height:2px; background:#3a4350;
+            transform:translateY(-50%); }
+  .legend { font-size:11px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap;
+            margin-top:8px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
+  .result-node { border:1px solid #2a313b; border-radius:8px; padding:10px; margin:10px 0; }
+  .result-node.err { border-color:#5a2626; }
+  video { max-width:320px; border-radius:6px; background:#000; display:block; }
+  audio { width:320px; display:block; margin-top:6px; }
+  .kv { font-size:12px; color:#9fb0c3; line-height:1.7; }
+  .kv b { color:#dde3ea; }
+  .errbox { color:#ff8a80; font-size:12px; }
+  #status { font-size:12px; color:#7fc4ff; }
+  .media-flex { display:flex; gap:16px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>多端录制制作面板</h1>
+  <span>控制端先检查设备就绪，再安排共同开始边界；录制起点以各端首个真实样本写入为准</span>
+</header>
+<main>
+  <div>
+    <div class="card">
+      <h2>采集端（勾选参与录制）</h2>
+      <div id="nodes"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>录制控制</h2>
+      <div class="ctl"><label>时长 (s)</label>
+        <input type="number" id="duration" value="2.0" step="0.5" min="1" max="10" style="width:70px"></div>
+      <div class="ctl"><label>失败策略</label>
+        <select id="policy">
+          <option value="cancel">明确取消（任一端失败则整轮取消）</option>
+          <option value="partial">部分录制（只用就绪端）</option>
+        </select></div>
+      <div class="ctl"><label>准备超时 (s)</label>
+        <input type="number" id="ptimeout" value="3.0" step="0.5" min="0.5" style="width:70px"></div>
+      <div class="ctl"><button id="go">发起录制</button></div>
+      <div id="status"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>故障注入（演示用）</h2>
+      <div id="faults" class="kv">各端下拉选择注入点；丢包会丢失 35% 回复（触发重试与幂等确认）。</div>
+    </div>
+  </div>
+  <div>
+    <div class="card">
+      <h2>过程记录（三类事件严格区分：命令发出 / 设备确认 / 首个真实样本）</h2>
+      <div id="events">尚未开始。</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>共同开始边界时间线（协调器时钟域）</h2>
+      <div id="timeline"></div>
+      <div class="legend">
+        <span><span class="dot" style="background:#7fc4ff"></span>就绪</span>
+        <span><span class="dot" style="background:#9aa7b5"></span>开始命令发出</span>
+        <span><span class="dot" style="background:#ffb26b"></span>设备确认收到</span>
+        <span><span class="dot" style="background:#7bd88a"></span>首个真实样本（录制起点）</span>
+        <span><span class="dot" style="background:#b39ddb"></span>完成</span>
+        <span><span class="dot" style="background:#ff8a80"></span>错误</span>
+        <span>▲ = 计划的共同起点 T_start</span>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>结果：各端真实片段与起点</h2>
+      <div id="results" class="kv">尚无录制结果。</div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let nodesCache = [], currentSid = null, pollTimer = null;
+
+async function j(u, opt) { const r = await fetch(u, opt); return r.json(); }
+
+function badge(state) {
+  const m = {ready:"b-ready", recording:"b-recording", starting:"b-recording",
+             failed:"b-failed", cancelled:"b-failed", done:"b-done"};
+  return `<span class="badge ${m[state]||''}">${state}</span>`;
+}
+
+let nodesBuilt = false;
+
+async function refreshNodes() {
+  const d = await j("/api/nodes");
+  nodesCache = d.nodes;
+  if (!nodesBuilt) {
+    $("#nodes").innerHTML = d.nodes.map(n => `
+      <div class="node-row">
+        <input type="checkbox" class="nsel" value="${n.id}" checked>
+        <b>${n.id}</b> <span class="kind">${n.kind}</span> <span id="st-${n.id}"></span>
+        <span class="kind">偏移 ${(n.true_offset*1000).toFixed(0)}ms 启动 ${(n.startup_delay*1000).toFixed(0)}ms</span>
+      </div>`).join("");
+    $("#faults").innerHTML = "故障注入：" + d.nodes.map(n => `
+      <div class="ctl"><label>${n.id}</label>
+        <select class="ffail" data-n="${n.id}">
+          <option value="">无</option><option value="prepare">prepare 失败</option>
+          <option value="start">start 失败</option>
+        </select>
+        <label style="min-width:0"><input type="checkbox" class="floss" data-n="${n.id}">丢包</label>
+      </div>`).join("");
+    nodesBuilt = true;
+  }
+  for (const n of d.nodes) {
+    const el = document.getElementById("st-" + n.id);
+    if (el) el.innerHTML = badge(n.state);
+  }
+  $("#go").disabled = d.session_running;
+}
+
+$("#go").onclick = async () => {
+  const nodes = [...document.querySelectorAll(".nsel:checked")].map(c => c.value);
+  const fail = {};
+  document.querySelectorAll(".ffail").forEach(s => { if (s.value) fail[s.dataset.n] = s.value; });
+  const loss = [...document.querySelectorAll(".floss:checked")].map(c => c.dataset.n);
+  const body = { nodes, duration: +$("#duration").value, policy: $("#policy").value,
+                 prepare_timeout: +$("#ptimeout").value, fail, loss };
+  $("#go").disabled = true;
+  const r = await j("/api/sessions", { method:"POST",
+    headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+  if (r.error) { $("#status").textContent = "错误: " + r.error; $("#go").disabled = false; return; }
+  currentSid = r.session_id;
+  $("#status").textContent = "会话 " + currentSid + " 运行中…";
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pollSession, 500);
+  pollSession();
+};
+
+const EV_COLOR = { start_command_sent:"#9aa7b5", start_ack:"#ffb26b",
+  first_sample:"#7bd88a", ready:"#7fc4ff", done:"#b39ddb" };
+
+async function pollSession() {
+  if (!currentSid) return;
+  const rec = await j("/api/sessions/" + currentSid);
+  if (rec.error) return;
+  renderEvents(rec); renderTimeline(rec);
+  if (rec.result !== "running") {
+    clearInterval(pollTimer); pollTimer = null;
+    $("#status").textContent = "会话 " + rec.session_id + " 结束: " + rec.result;
+    $("#go").disabled = false;
+    renderResults(rec);
+    refreshNodes();
+  }
+}
+
+function renderEvents(rec) {
+  $("#events").innerHTML = rec.events.map(e => {
+    const cls = "e ev-" + e.type;
+    let extra = "";
+    if (e.type === "first_sample")
+      extra = ` t=${e.t_coord.toFixed(3)}s ±${(e.err*1000).toFixed(1)}ms (相对T_start ${(e.offset_from_t_start*1000).toFixed(1)}ms)`;
+    if (e.type === "skew_estimated")
+      extra = ` θ=${(e.theta*1000).toFixed(1)}ms ±${(e.error*1000).toFixed(1)}ms`;
+    if (e.type === "start_ack" && e.already) extra = " (重复命令→幂等确认，未新开文件)";
+    if (e.reason) extra = " " + e.reason;
+    return `<div class="${cls}">[${e.dt.toFixed(3)}] ${e.type}${e.node?" "+e.node:""}${extra}</div>`;
+  }).join("");
+  const box = $("#events"); box.scrollTop = box.scrollHeight;
+}
+
+function renderTimeline(rec) {
+  const per = {};
+  for (const e of rec.events) {
+    if (!e.node) continue;
+    (per[e.node] = per[e.node] || []).push(e);
+  }
+  const t0 = 0, t1 = Math.max(rec.finished_dt || 0,
+    ...rec.events.map(e => e.dt), rec.t_start_dt || 0) + 0.05;
+  const X = t => (6 + 94 * (t - t0) / (t1 - t0));
+  let html = "";
+  for (const nid of Object.keys(per)) {
+    let marks = "";
+    if (rec.t_start_dt != null)
+      marks += `<div style="position:absolute;left:${X(rec.t_start_dt)}%;top:2px;color:#7bd88a;font-size:10px">▲</div>`;
+    for (const e of per[nid]) {
+      const c = EV_COLOR[e.type] || (e.type.includes("error")||e.type.includes("timeout") ? "#ff8a80" : null);
+      if (!c) continue;
+      marks += `<div class="mk" style="left:${X(e.dt)}%;background:${c}" title="${e.type} @${e.dt.toFixed(3)}s"></div>`;
+    }
+    html += `<div class="tl-row"><div class="tl-label">${nid}</div>
+             <div class="tl-track"><div class="mk-bar" style="left:6%;width:94%"></div>${marks}</div></div>`;
+  }
+  $("#timeline").innerHTML = html || "<span class=kv>等待事件…</span>";
+}
+
+function renderResults(rec) {
+  const el = $("#results");
+  let html = `<div>会话 <b>${rec.session_id}</b> 结果 <b>${rec.result}</b>；
+    共同起点 T_start = 会话后 ${(rec.t_start_dt||0).toFixed(3)}s。
+    过程记录: <a href="/files/${rec.session_id}/record.json" style="color:#7fc4ff">record.json</a></div>`;
+  if (rec.stale_ignored && rec.stale_ignored.length)
+    html += `<div class="kv">已忽略 ${rec.stale_ignored.length} 条过期/不匹配消息（旧确认不能满足新一轮屏障）。</div>`;
+  html += `<div class="media-flex">`;
+  for (const [nid, n] of Object.entries(rec.nodes)) {
+    const fs = n.first_sample;
+    html += `<div class="result-node ${n.error ? "err" : ""}">
+      <b>${nid}</b> <span class="kind">${n.kind}</span><br>`;
+    if (n.skew)
+      html += `<div class="kv">时钟偏差估计 θ=<b>${(n.skew.theta*1000).toFixed(1)}ms</b> ±${(n.skew.error*1000).toFixed(1)}ms（真实偏移 ${(n.true_offset*1000).toFixed(0)}ms）</div>`;
+    if (fs)
+      html += `<div class="kv">首个真实样本: 协调器时钟 <b>${fs.t_coord.toFixed(3)}s</b> ±${(fs.err*1000).toFixed(1)}ms，
+        相对 T_start <b>${(fs.offset_from_t_start*1000).toFixed(1)}ms</b></div>`;
+    if (n.stats)
+      html += `<div class="kv">写入: ${n.stats.frames ? n.stats.frames + " 帧" : n.stats.samples + " 采样"}</div>`;
+    if (n.error)
+      html += `<div class="errbox">失败反馈: ${n.error}</div>`;
+    if (n.file_exists && n.file_rel) {
+      const url = "/files/" + rec.session_id + "/" + n.file_rel.split("/").pop();
+      html += n.kind === "camera"
+        ? `<video controls preload="metadata" src="${url}"></video>`
+        : `<audio controls src="${url}"></audio>`;
+      html += `<div class="kv"><a href="${url}" style="color:#7fc4ff" download>下载片段</a></div>`;
+    } else if (n.file) {
+      html += `<div class="errbox">文件未生成</div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+refreshNodes();
+setInterval(refreshNodes, 2000);
+</script>
+</body>
+</html>

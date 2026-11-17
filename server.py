@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from multirec.coordinator import Coordinator, DEFAULT_NODES
+from multirec import verify as verify_mod
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RECORDINGS = os.path.join(BASE, "recordings")
@@ -93,14 +94,69 @@ def start_session(req: SessionRequest):
     return {"session_id": sid}
 
 
+def _disk_sessions():
+    """Sessions persisted on disk (incl. committed regression samples),
+    so they stay openable from the panel after a restart."""
+    out = []
+    for d in sorted(os.listdir(RECORDINGS)):
+        p = os.path.join(RECORDINGS, d, "record.json")
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p) as fh:
+                r = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        out.append({"session_id": d, "result": r.get("result"),
+                    "created_wall": r.get("created_wall"),
+                    "nodes": list(r.get("nodes", {}).keys())})
+    return out
+
+
 @app.get("/api/sessions")
 def list_sessions():
     out = []
+    seen = set()
     for sid, rec in kernel.sessions.items():
+        seen.add(sid)
         out.append({"session_id": sid, "result": rec.get("result"),
                     "created_wall": rec.get("created_wall"),
                     "nodes": list(rec.get("nodes", {}).keys())})
+    for s in _disk_sessions():
+        if s["session_id"] not in seen:
+            out.append(s)
     return {"sessions": out}
+
+
+def _load_record(sid):
+    rec = kernel.sessions.get(sid)
+    if rec is not None:
+        return rec
+    path = os.path.join(RECORDINGS, sid, "record.json")
+    if os.path.exists(path):
+        with open(path) as fh:
+            return json.load(fh)
+    return None
+
+
+@app.get("/api/sessions/{sid}/verify")
+def verify_session(sid):
+    """Actual computation over the real clips: decode every file, re-derive
+    each end's real start from the ground-truth clock, and report per-node
+    failures for the panel to display."""
+    rec = _load_record(sid)
+    if rec is None:
+        return {"error": "not found"}, 404
+    if rec.get("result") == "running":
+        return {"error": "session still running"}, 409
+    cfg = {nid: {"color": n.color, "tone": n.tone,
+                 "true_offset": n.true_offset}
+           for nid, n in kernel.nodes.items()}
+    try:
+        return verify_mod.verify_session(
+            rec, nodes_cfg=cfg, base_dir=os.path.join(RECORDINGS, sid))
+    except Exception as exc:  # surfaced to the panel, never swallowed
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.get("/api/sessions/{sid}")

@@ -84,6 +84,10 @@
       <div id="status"></div>
     </div>
     <div class="card" style="margin-top:14px">
+      <h2>会话 / 回归样例（点击打开）</h2>
+      <div id="sessions" class="kv">加载中…</div>
+    </div>
+    <div class="card" style="margin-top:14px">
       <h2>故障注入（演示用）</h2>
       <div id="faults" class="kv">各端下拉选择注入点；丢包会丢失 35% 回复（触发重试与幂等确认）。</div>
     </div>
@@ -109,6 +113,7 @@
     <div class="card" style="margin-top:14px">
       <h2>结果：各端真实片段与起点</h2>
       <div id="results" class="kv">尚无录制结果。</div>
+      <div id="verify" style="margin-top:10px"></div>
     </div>
   </div>
 </main>
@@ -161,6 +166,7 @@ $("#go").onclick = async () => {
   const body = { nodes, duration: +$("#duration").value, policy: $("#policy").value,
                  prepare_timeout: +$("#ptimeout").value, fail, loss };
   $("#go").disabled = true;
+  $("#results").innerHTML = "录制进行中…"; $("#verify").innerHTML = "";
   const r = await j("/api/sessions", { method:"POST",
     headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
   if (r.error) { $("#status").textContent = "错误: " + r.error; $("#go").disabled = false; return; }
@@ -169,7 +175,47 @@ $("#go").onclick = async () => {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(pollSession, 500);
   pollSession();
+  refreshSessions();
 };
+
+async function refreshSessions() {
+  const d = await j("/api/sessions");
+  $("#sessions").innerHTML = d.sessions.slice().reverse().map(s =>
+    `<div class="e"><a href="#" data-sid="${s.session_id}" style="color:#7fc4ff">${s.session_id}</a>
+     <span class="kind">${s.result} ${(s.created_wall||"").slice(0,19)} [${(s.nodes||[]).join(",")}]</span></div>`
+  ).join("") || "暂无会话。";
+  document.querySelectorAll("#sessions a").forEach(a => a.onclick = ev => {
+    ev.preventDefault(); openSession(a.dataset.sid);
+  });
+}
+
+async function openSession(sid) {
+  const rec = await j("/api/sessions/" + sid);
+  if (rec.error) { $("#status").textContent = "打开失败: " + rec.error; return; }
+  currentSid = sid;
+  $("#status").textContent = "查看会话 " + sid + " : " + rec.result;
+  renderEvents(rec); renderTimeline(rec); renderResults(rec);
+  if (rec.result !== "running") runVerify(sid);
+}
+
+async function runVerify(sid) {
+  const box = $("#verify");
+  box.innerHTML = "<span class=kv>正在实际运算校验各端真实片段与起点…</span>";
+  const v = await j("/api/sessions/" + sid + "/verify");
+  if (v.error) { box.innerHTML = `<div class="errbox">校验异常: ${v.error}</div>`; return; }
+  let html = `<div>实际运算校验: <b>${v.ok ? "通过" : "未通过"}</b>；
+    成员集(执行证据): <b>${(v.members||[]).join(", ") || "空"}</b>`;
+  if (v.stray_files && v.stray_files.length)
+    html += `；<span class="errbox">游离文件(非成员): ${v.stray_files.join(",")}</span>`;
+  html += `</div>`;
+  for (const [nid, o] of Object.entries(v.nodes || {})) {
+    let rows = Object.entries(o.checks || {}).map(([name, c]) =>
+      `<div class="kv" style="color:${c.ok ? "#7bd88a" : "#ff8a80"}">${c.ok ? "✓" : "✗"} ${name}: ${c.detail}</div>`).join("");
+    if (o.node_error) rows = `<div class="errbox">失败反馈: ${o.node_error}</div>` + rows;
+    html += `<div class="result-node ${o.ok ? "" : "err"}"><b>${nid}</b> ${o.ok ? "OK" : "失败"}${rows}</div>`;
+  }
+  box.innerHTML = html;
+}
 
 const EV_COLOR = { start_command_sent:"#9aa7b5", start_ack:"#ffb26b",
   first_sample:"#7bd88a", ready:"#7fc4ff", done:"#b39ddb" };
@@ -184,7 +230,9 @@ async function pollSession() {
     $("#status").textContent = "会话 " + rec.session_id + " 结束: " + rec.result;
     $("#go").disabled = false;
     renderResults(rec);
+    runVerify(rec.session_id);
     refreshNodes();
+    refreshSessions();
   }
 }
 
@@ -265,6 +313,7 @@ function renderResults(rec) {
 }
 
 refreshNodes();
+refreshSessions();
 setInterval(refreshNodes, 2000);
 </script>
 </body>

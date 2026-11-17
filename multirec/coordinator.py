@@ -142,7 +142,11 @@ class Coordinator:
         out = {}
         for nid, pend in pends.items():
             remain = deadline - time.monotonic()
-            if remain > 0 and pend.event.wait(remain):
+            if remain > 0:
+                pend.event.wait(remain)
+            # a reply that already arrived is honoured even when another
+            # node's loss consumed the rest of the shared deadline
+            if pend.event.is_set():
                 out[nid] = pend.msg
             else:
                 out[nid] = None

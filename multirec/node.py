@@ -168,6 +168,11 @@ class Node:
                 return
             self.state = "done"
             self._done_sessions.add(sid)
+            # finalize the file BEFORE reporting done: a done notification
+            # must mean the clip on disk is complete and verifiable
+            if writer is not None:
+                writer.close()
+                writer = None
             self._notify({"type": "done", "session": sid, "stats": self._stats})
         except Exception as exc:  # real device failure path
             self.state = "failed"
